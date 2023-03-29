@@ -34,16 +34,18 @@ def main():
     config.print_configs(args, [data_cfg, model_cfg, run_cfg], device, output)
     torch.zeros((1)).to(device)
 
-    ## Loading datasets
-    start = Print(" ".join(['start loading datasets']), output)
+    start = Print(" ".join(["start loading datasets"]), output)
     dataset_idxs, datasets, iterators = data_cfg.path.keys(), [], []
     for idx in dataset_idxs:
         dataset = get_dataset_from_configs(data_cfg, idx)
-        iterator = torch.utils.data.DataLoader(dataset, run_cfg.batch_size, shuffle=False, pin_memory=True, num_workers=4)
+        iterator = torch.utils.data.DataLoader(
+            dataset, run_cfg.batch_size, shuffle=False, pin_memory=True, num_workers=8
+        )
         datasets.append(dataset)
         iterators.append(iterator)
-        end = Print(" ".join(['loaded', str(len(dataset)), idx, 'samples']), output)
-    Print(" ".join(['elapsed time:', str(end - start)]), output, newline=True)
+        end = Print(" ".join(["loaded", str(len(dataset)), idx, "samples"]), output)
+    Print(" ".join(["elapsed time:", str(end - start)]), output, newline=True)
+
 
     ## initialize a model
     start = Print('start initializing a model', output)

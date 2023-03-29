@@ -1,40 +1,67 @@
 # Written by Seonwoo Min, Seoul National University (mswzeus@gmail.com)
 
 import sys
+import os
 import numpy as np
 from Bio import pairwise2
 
-import torch
+from torch.utils.data import Dataset
+import dask
+import dask.dataframe as dd
+import dask.array as da
+import dask.bag as db
 
 
-class miRNA_CTS_dataset(torch.utils.data.Dataset):
-    """ Pytorch dataloader for miRNA-CTS pair data """
+class miRNA_CTS_Dask_Dataset(Dataset):
+    """ PyTorch dataloader for miRNA-CTS pair data using Dask """
     def __init__(self, X, labels, set_idxs, set_labels):
         self.X = X
-        self.labels = labels
+        self.labels = labels.astype(np.int64)
         self.set_idxs = set_idxs
         self.set_labels = set_labels
 
-    def __len__(self):
-        return len(self.labels)
-
     def __getitem__(self, i):
-        return self.X[i], self.labels[i], self.set_idxs[i]
+        x, label, set_idx = dask.compute(self.X[i], self.labels[i], self.set_idxs[i], scheduler='threads')
+        return x, label, set_idx
 
 
-def get_dataset_from_configs(data_cfg, split_idx=None):
+    def __len__(self):
+        return self.labels.shape[0]
+
+    def get_set_labels(self):
+        return self.set_label
+
+def get_dataset_from_configs(data_cfg, split_idx=None, chunk_size=(10000, 1, 50)):
     """ load miRNA-CTS dataset from config files """
-    FILE = open(data_cfg.path[split_idx], "r")
-    lines = FILE.readlines()
-    FILE.close()
+    with open(data_cfg.path[split_idx], "r") as f:
+        header = f.readline().strip().split("\t")
+
+    if "split" in header:
+        df = dd.read_csv(
+            data_cfg.path[split_idx], 
+            sep="\t", header=None, 
+            usecols=[0,1,2,3,4,5], 
+            names=header, 
+            skiprows=1
+            )
+        df = df[df["split"] == split_idx] if split_idx in ["train", "val"] else df
+    else:
+        df = dd.read_csv(
+            data_cfg.path[split_idx], 
+            sep="\t", 
+            header=None, 
+            usecols=[0,1,2,3,4], 
+            names=["mirna_id", "mirna_seq", "mrna_id", "mrna_seq", "label"], 
+            skiprows=1
+            )
 
     X, labels, set_idxs, set_labels = [], [], [], []
     set_idx = 0
-    for l, line in enumerate(lines[1:]):
-        tokens = line.strip().split("\t")
-        mirna_id, mirna_seq, mrna_id, mrna_seq = tokens[:4]
-        label = float(tokens[4]) if len(tokens) > 4 else 0
-        if split_idx in ["train", "val"] and tokens[5] != split_idx: continue
+
+
+    for i, row in df.iterrows():
+
+        mirna_id, mirna_seq, mrna_id, mrna_seq, label = row[:5]
 
         mirna_seq = mirna_seq.upper().replace("T", "U")
         mrna_seq = mrna_seq.upper().replace("T", "U")
@@ -43,19 +70,25 @@ def get_dataset_from_configs(data_cfg, split_idx=None):
         for pos in range(len(mrna_rev_seq) - 40 + 1):
             mirna_esa, cts_rev_esa, esa_score = extended_seed_alignment(mirna_seq, mrna_rev_seq[pos:pos+40])
             if split_idx not in ["train", "val"] and esa_score < 6: continue
-            X.append(torch.from_numpy(encode_RNA(mirna_seq, mirna_esa,
-                                                 mrna_rev_seq[pos:pos+40], cts_rev_esa, data_cfg.with_esa)))
-            labels.append(torch.from_numpy(np.array(label)).unsqueeze(0))
-            set_idxs.append(torch.from_numpy(np.array(set_idx)).unsqueeze(0))
+            X.append(encode_RNA(mirna_seq, mirna_esa, mrna_rev_seq[pos:pos+40], cts_rev_esa, data_cfg.with_esa))
+            labels.append(np.array(label))
+            set_idxs.append(np.array(set_idx))
 
         set_labels.append(label)
         set_idx += 1
 
         if set_idx % 5 == 0:
-            print('# {} {:.1%}'.format(split_idx, l / len(lines[1:])), end='\r', file=sys.stderr)
+            print('# {} {:.1%}'.format(split_idx, i / len(df)), end='\r', file=sys.stderr)
     print(' ' * 150, end='\r', file=sys.stderr)
 
-    dataset = miRNA_CTS_dataset(X, labels, set_idxs, np.array(set_labels))
+    X = da.from_array(X)
+    X = X.rechunk(chunk_size)
+
+    labels = da.from_array(labels, chunks=(chunk_size[0],))
+    set_idxs = da.from_array(set_idxs, chunks=(chunk_size[0],))
+    set_labels = da.from_array(set_labels, chunks=(chunk_size[0],))
+
+    dataset = miRNA_CTS_Dask_Dataset(X, labels, set_idxs, set_labels)
 
     return dataset
 
